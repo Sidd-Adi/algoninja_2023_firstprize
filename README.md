@@ -30,7 +30,7 @@ The following strategies were implemented and backtested for the competition:
 - Strategy 1: Long-term swing strategy using daily/weekly timeframes for more stable, less frequent trades.
 - Strategy 2: Short-term trading strategy focused on minute-by-minute data analysis. 
 - Strategy 3: Mid-term strategy leveraging a combination of technical indicators and historical price movements.
-- 
+  
 Each strategy was backtested against the provided dataset, with results showing significant profitability and risk-adjusted returns in the final presentation.
 
 ## 🏅 Acknowledgements
