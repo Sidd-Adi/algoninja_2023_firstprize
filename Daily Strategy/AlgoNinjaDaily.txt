@@ -1,0 +1,1220 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# # **ML-Based Algo Trading Model**
+# ### **Team:** SiddAdi
+# ### **By:** Siddharth Acharya
+# ### **College:** IIT Madras
+
+# # **Introduction**
+
+# In the quest for a lucrative trading approach, this initiative utilized the given 1-minute OHLC dataset of Future contracts of 3 years, converting it into daily and weekly formats. Utilizing a machine learning-based trading strategy with customized hyperparameters and risk management methods, the model surpasses traditional Buy and Hold strategies, boasting an exceptional 75L+ superiority. The algorithm not only demonstrates robust performance and effective risk management but is also validated by key metrics, signifying a noteworthy stride in the realm of machine learning-driven algorithmic trading. This report provides an in-depth exploration of the algorithm's logic, detailing the use of bespoke backtesting functions and classes crucial for thorough testing and analysis.
+
+# # **Important Considerations**
+# - All trades occur on daily/weekly closing.
+# - As per the contest rules:
+#     - Every trade involves a fixed quantity of 100 contracts.
+#     - A standard commission of 750 is applied for each trade.
+#     - No complex strategies like position sizing, multiple trades, or averaging are employed.
+
+# # **Import Packages**
+# We begin by importing the necessary packages for data processing and visualizing the results and plots.
+
+# In[1]:
+
+
+import pandas as pd
+import pandas_ta as ta
+import numpy as np
+
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from datetime import datetime
+
+
+# # **Load Dataset**
+# The provided dataset is loaded. If using this code version, ensure to modify the `csv_path` to the correct file path after downloading the dataset. The dataset is described as a 1-minute OHLC dataset, including information such as Date, Expiry Date of the contract, and Time. Appropriate header files are added for clarity as shown below.
+
+# In[2]:
+
+
+csv_path = "/Users/siddharthacharya/Downloads/Data_2020-2022_wExpiry.csv"
+columns = ['Date', 'ExpiryDate', 'Time', 'Open', 'High', 'Low', 'Close']
+df = pd.read_csv(csv_path, header=None, names=columns)
+df = df.dropna()
+df.tail()
+
+
+# Our trading strategy relies on daily closing prices to make decisions. For training our model and determining things like Take Profit (TP) and Stop Loss (SL), we need weekly data that includes Open, High, Low, and Close (OHLC) prices.
+# To make our model work, we first have to change the given 1-minute data into daily and weekly formats. Here's how we do it:
+
+# In[3]:
+
+
+# Preserve the original dataset
+dfc = df.copy()
+
+# Convert 'Date' column to a datetime format
+dfc['Date'] = pd.to_datetime(dfc['Date'], format='%Y%m%d')
+
+# Extract hour and minute information from the 'Time' column
+dfc['Hour'] = dfc['Time'] // 100
+dfc['Minute'] = dfc['Time'] % 100
+
+# Create a new datetime column combining date, hour, and minute
+dfc['DateTime'] = pd.to_datetime(dfc[['Date', 'Hour', 'Minute']].astype(str).agg('-'.join, axis=1), format='%Y-%m-%d-%H-%M')
+
+# Set 'DateTime' column as the index
+dfc.set_index('DateTime', inplace=True)
+
+
+# # **Function for Converting Time Frames**
+
+# Now that we've set up our data in a format that suits our trading strategy, the next step is to define timeframes that align with our trading model. This involves resampling our data to different intervals. Let's see how this works.
+# ## **Code Explanation:**
+# We've created a function called `df_tf(t)` that takes a timeframe t as input. 
+
+# In[4]:
+
+
+def df_tf(t):
+    # Resample the data to desired intervals and use the open price as the resampling method
+    df_tf = dfc.resample(f'{t}',closed = 'right').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'})
+
+    df_tf.dropna(subset=['Close'], inplace=True)
+
+    # Reset the index to make 'DateTime' a regular column again
+    df_tf.reset_index(inplace=True)
+    return df_tf
+
+
+# Here's what each part of the code does:
+# ### **Resampling:**
+# 
+# - We use the `.resample()` method to change the frequency of our data to the specified timeframe (t).
+# - `closed = 'right'` ensures that the last observation is included in the resampled data.
+# - The aggregation functions `(agg())` help gather the first Open, maximum High, minimum Low, and last Close prices within each timeframe.
+# 
+# ### **Cleaning:**
+# 
+# - We drop any rows that don't have an Open price because this is crucial for our analysis.
+# 
+# ### **Index Reset:**
+# 
+# - Finally, we reset the index to make our 'DateTime' a regular column again.
+
+# We've successfully resampled our dataset into various timeframes to cater to different aspects of our trading strategy. Here's a quick overview of the timeframes we've created:
+
+# In[5]:
+
+
+df_5T = df_tf('5T')
+df_15T = df_tf('15T')
+df_30T = df_tf('30T')
+df_1H = df_tf('1H')
+df_4H = df_tf('4H')
+df_D = df_tf('D')
+df_W = df_tf('W')
+df_M = df_tf('M')
+
+
+# In[6]:
+
+
+df_D.tail()
+
+
+# In[7]:
+
+
+df_W.tail()
+
+
+# The start of each week is set on a Sunday. The `DateTime` column for each week corresponds to the closing date on that particular Sunday. Consequently, each week encompasses the days leading up to the mentioned Sunday, starting from the previous Sunday. This distinction is crucial as we iterate through the days within each week; the focus is on the days preceding the DateTime of the week, not those following it.
+
+# # **Simplified Maximum Theoretical Profits**
+
+# In this section, we conduct a simplified maximum theoretical profit analysis to elucidate the upper bounds of profitability for our trading strategy. The objective is to gain insights into the potential gains of the strategy and assess its scalability. Additionally, we aim to determine the most suitable timeframe for trading, considering transaction costs and the impact of trade quantities on overall profitability. This analysis aids in setting realistic expectations and optimizing our strategy for effective performance in real-world trading conditions.
+
+# In[8]:
+
+
+def max_profit(data,tf):
+    # Optimal entry and exit points
+    entry_points = data['Low']
+    exit_points = data['High']
+
+    price_difference = exit_points - entry_points
+
+    # Use boolean indexing to calculate theoretical_profit only for differences greater than 7.5
+    # For ideal profit, a trade shouldn't be taken if the commission wipes out its profit
+    theoretical_profit = 100 * price_difference[price_difference > 7.5].sum()
+
+    # Consider transaction costs 
+    transaction_costs = 750 * (len(data)-len(price_difference[price_difference < 7.5]))
+
+    # Adjusted theoretical profit
+    adjusted_theoretical_profit = theoretical_profit - transaction_costs
+    
+    print(f"Time Frame: {tf}")
+    print(f"Theoretical Profit: {theoretical_profit}")
+    print(f"Adjusted Theoretical Profit (considering transaction costs): {adjusted_theoretical_profit}\n")    
+
+
+# In[9]:
+
+
+max_profit(df,'1 Minute')
+max_profit(df_5T,'5 Minute')
+max_profit(df_15T,'15 Minute')
+max_profit(df_30T,'30 Minute')
+max_profit(df_1H,'1 Hour')
+max_profit(df_4H,'4 Hour')
+max_profit(df_D,'Daily')
+max_profit(df_W,'Weekly')
+max_profit(df_M,'Monthly')
+
+
+# The choice of the optimal time frame for trading involves a delicate balance between potential profits and practical considerations. Here's a summary of the insights gained:
+# 
+# ## **Commission Impact on Shorter Time Frames:**
+# - While shorter time frames exhibit high theoretical profits, a substantial portion may be consumed by transaction costs.
+# - The frequent trading nature of short time frames results in increased commission expenses.
+# 
+# ## **Challenges of Short Time Frames:**
+# 
+# - Training a model on shorter time frames is challenging due to heightened market noise and the need for more sophisticated features.
+# - Shorter time frames often require advanced strategies to filter out noise effectively.
+# - I've also crafted two additional algorithms tailored for shorter time frames, discussed in the other documents.
+# 
+# ## **Monthly vs. Daily Time Frames:**
+# 
+# - Monthly data is favorable for reducing market noise, but with only 36 data points over three years, it lacks sufficient data for robust training and testing.
+# - After experimentation, monthly data didn't yield satisfactory results.
+# 
+# ## **Optimal Choice: Weekly Data:**
+# - Weekly data strikes a balance, offering enough data points for training and testing while minimizing market noise.
+# - The model is trained on a weekly basis, ensuring it captures meaningful patterns.
+# 
+# ## **Execution Time Frames: Daily and Weekly:**
+# - While the model is trained on a weekly basis, trade execution occurs in both daily and weekly time frames.
+# - Daily execution aligns with the need to exit expiry contracts promptly, and weekly execution allows for training better models.
+# 
+# In essence, the chosen approach optimally addresses the challenges posed by different time frames, maximizing the model's efficacy in real-world trading scenarios.
+
+# # **Psuedocode: High Level Strategy Logic**
+
+# This section lays out the main ideas behind our trading strategy. It covers different situations and how our model handles them. We'll delve into the details of the tools used and when to start or stop a trade. All of this will be explained more practically when we go through the code in the later part of the report.
+
+# ## Requirements:
+# 
+# - ML model for buy/sell signals
+# - Weekly (Open) EMA indicator
+# - Weekly (Open, High, Low) ATR for TP(Take Profit) and SL(Stop Loss)
+# - Position management protocols
+# 
+# ## Training the Model:
+# 
+# - Trains on OHLC weekly data
+# - Classifies next week's closing as below or above current week's closing
+# - Rolling predictor and training to prevent data leakage or look ahead bias
+# - Retrained every 5 weeks on the past weekly OHLC data 
+# 
+# ## Signal Generation and Trade Execution:
+# 
+# - Loop through weekly data and daily data consisting inside each week
+# - ML model indicates buy/sell signals
+# - `1` for sell, `0` for buy
+# - If no trade is active, follow signal, else check EMA also.
+# - EMA signals for position closures in case of opposite ML signals to current trade. 
+#     - Specifically:
+#         - Current trade is long, but ML model shows 1 (sell).
+#         - **IF** EMA < Low of week:
+#                 exit long trade
+#                 enter short trade
+#         - **ELSE**:
+#                 hold current long trade unless SL/TP is reached.
+#         - **Logic:** 
+#             - Low above EMA indicates retracement back to EMA
+#             - Switch trade based on ML model signal to short position
+#     - Similarly:
+#         - Current trade is short, but ML model shows 0 (buy).
+#         - **IF** EMA < High of week:
+#                 exit short trade
+#                 enter long trade
+#         - **ELSE**:
+#                 hold current long trade unless SL/TP is reached.
+#         - **Logic:**
+#             - High above EMA indicates potential breakout
+#             - Switch trade based on ML model signal to long position
+#             
+# - Positions closed on weekly expiry on daily closing price or as per risk management(Take Profit/Stop Loss)
+# 
+# ## Risk Management:
+# - Daily and weekly risk management based on ATR
+# - Custom Multiplier * ATR is used for TP and SL
+# - For Daily (Previous week ATR is used to avoid look-ahead bias):
+#     - No Take Profit Condition
+#     - Stop Loss: Multiplier = 0.75
+# - For Weekly:
+#     - Take Profit: Multiplier = 1.5
+#     - No need for a Stop Loss as it's already managed on a daily basis.
+# - Current P&L is stored for exit decisions
+#     - if current_pnl < SL or current_pnl > TP:
+#         - Exit position and enter opposite trade
+# 
+# ## Position Management:
+# - No simultaneous open positions
+# - Close all positions on expiry days
+# - Check for active positions before entering a trade
+# - EMA signal evaluated for opposite signal to current trade, explained in **Signal Generation**
+
+# # **Prepare Technical Indicators**
+
+# In[10]:
+
+
+df_W['EMAF'] = df_W['Open'].ewm(span=10, adjust=False).mean()
+df_W['ATR'] = ta.atr(df_W['High'], df_W['Low'], df_W['Open'], length=5)
+df_W['ATR'].fillna(0, inplace=True)  # Replace NaN with 0
+
+
+# The ATR values are replaced with 0 to prevent dropping rows during .dropna. ATR values below the first 10 weeks are not relevant for trades, but other columns such as `'Open'`, `'High'`, `'Low'` and `'Close'` even with ATR = 0 are needed for ML model training.
+
+# In[11]:
+
+
+df_W
+
+
+# # **XGBoost Model**
+
+# XGBoost was selected as the classification model for signal prediction due to its exceptional performance in handling structured financial data. Known for its accuracy and efficiency, XGBoost excels at capturing complex non-linear patterns, providing insights into feature importance and offering robustness to outliers. The model's regularization techniques and ensemble framework contribute to its stability and scalability, making it an ideal choice for effectively predicting market signals based on OHLC features in our dataset.
+
+# In[12]:
+
+
+import pandas as pd
+from xgboost import XGBClassifier
+
+# Copy weekly dataset into backtesting dataset (dfb)
+dfb = df_W.copy()
+
+dfb['Next_Close'] = dfb['Close'].shift(-1)
+
+# 1 for Sell signal and 0 for Buy Signal
+dfb['Direction'] = (dfb['Next_Close'] < dfb['Close']).astype(int)
+
+# Remove Rows with empty values 
+dfb = dfb.dropna()
+
+# Initialize XGBoost regressors (Hyperparameters used for better model)
+xgb_model = XGBClassifier(learning_rate = 0.25,gamma = 0.7,scale_pos_weight=2) 
+
+# Features used for predicting Direction
+features = ['Open', 'High','Low','Close']
+
+
+# ## Objective:
+# 
+# - Predict whether the next week's closing price will go up (buy signal) or down (sell signal).
+# 
+# ## Data Preparation:
+# 
+# - Use weekly OHLC data (Open, High, Low, Close).
+# - Create a new column for the next week's closing price.
+# 
+# ## Labeling for Prediction:
+# 
+# - Assign labels:
+#     - **1** for a sell signal (if next week's close is less than the current week).
+#     - **0** for a buy signal (if next week's close is equal to or greater than the current week).
+#   
+# ## Handling Data Issues:
+# - Remove any rows with missing values.
+# 
+# ## Model Selection and Setup:
+# 
+# - Use the XGBoost algorithm for classification.
+# - Set specific model settings (learning rate, gamma, scale_pos_weight).
+# - The optimal parameters were found out conducting a grid search.
+# 
+# ## Features for Prediction:
+# 
+# - Features used for prediction: `'Open'`, `'High'`, `'Low'`, `'Close'`.
+# 
+# This process establishes a model ready to learn from historical data and make predictions about whether the market is likely to go up or down in the future.
+
+# # **Creating Indicator**
+
+# Now that our model is set up, we train it every 5 weeks on the weekly OHLC data of the past weeks. We then use this trained model to predict signals for the next 5 weeks. This process repeats, with the model retrained every 5 weeks on the past weeks for the next 5-week predictions. The below functions are crucial for the preliminary testing of our machine learning indicator. Let's explore what each function does.
+
+# In[13]:
+
+
+def predict(train, test, predictors, xgb_model):
+    xgb_model.fit(train[predictors], train["Direction"])   
+    preds = xgb_model.predict(test[predictors])
+    preds = pd.Series(preds, index=test.index, name="Predictions")
+    combined = pd.concat([test["Direction"], preds], axis=1)
+    return combined
+
+
+# The `predict` function is the core of our model training. It trains the machine learning model a training set and generates predictions for the testing set. The output is the resulting combination of actual("Direction") and predicted("Predictions") values which allows us to assess the model's performance.
+# 
+# ## **Input Parameters:**
+# - `train`: DataFrame containing training data.
+# - `test`: DataFrame containing test data.
+# - `predictors`: List of feature columns used for prediction.
+# - `model`: Machine learning model (XGBoost Classifier).
+# 
+# ## **Functionality:**
+# - Trains the machine learning model on the training data using specified predictors and target variable ("Direction").
+# - Generates predictions on the test data.
+# - Combines the actual "Direction" values from the test set with the predicted values into a DataFrame.
+# - Returns the combined DataFrame.
+
+# In[14]:
+
+
+def backtest(data, xgb_model, predictors, start=10, step=5):
+    all_predictions = []
+
+    for i in range(start, data.shape[0], step):
+        train = data.iloc[max(i-30,0):i].copy()
+        test = data.iloc[i:(i+step)].copy()
+        predictions = predict(train, test, predictors, xgb_model)
+        all_predictions.append(predictions)
+        
+    
+    return pd.concat(all_predictions)
+
+
+# To have a robust and reliable model, we employed a method that exclusively utilizes past data for training and predicts future trends. This function performs a systematic iteration of training and predicting.
+# 
+# The `predict` function takes center stage in this process. It serves a dual purpose: first, to train the model and second, to generate predictions for future directions. The outcome is a combined dataset that juxtaposes actual and predicted directions. This consolidated data provides a comprehensive view, allowing us to assess the accuracy,precision and other metrics of our predictions against the real market movements.
+# 
+# ## **Input Parameters:**
+# - `data`: DataFrame containing the entire dataset.
+# - `model`: Machine learning model (XGBoost Classifier).
+# - `predictors`: List of feature columns used for prediction.
+# - `start`: Starting index for the backtesting process (default is 10).
+# - `step`: Number of data points to use in each backtesting iteration (default is 5).
+#   
+# ## **Functionality:**
+# - Conducts a rolling backtest over the dataset.
+# - Iterates over the dataset with a specified step size, using a window of data points for training and testing in each iteration.
+# - Calls the predict function to get predictions for each testing window.
+# - Appends the predictions to a list.
+# - Concatenates all the prediction DataFrames into a single DataFrame.
+# - Returns the concatenated DataFrame containing actual and predicted values.
+
+# In[15]:
+
+
+predictions = backtest(dfb, xgb_model, features)
+
+
+# Now, we've generated a 'predictions' dataframe, incorporating both actual and predicted signals. Utilizing a rolling training and testing approach, our model leverages only the past OHLC data, training every 5 weeks to forecast closing price movement for the subsequent 5 weeks. In this dataframe, 'Signal 0' indicates an expected close above the previous week, while 'Signal 1' denotes an expected close below. Actual and predicted directions are neatly presented in separate columns for easy evaluation.
+
+# In[16]:
+
+
+predictions
+
+
+# # **Reliability of Model**
+
+# We conducted a reliability test for our model by comparing predictions with actual data, and various performance metrics such as precision and accuracy were employed for evaluation. In presenting the metrics of the optimized model, it's crucial to note that the initial results, while profitable, were slightly suboptimal. To address this, we implemented hyperparameter tuning using grid search, aiming to enhance the model's performance by identifying the best hyperparameters.
+
+# In[17]:
+
+
+y_pred = predictions["Predictions"]
+y_true = predictions["Direction"]
+
+
+# In[18]:
+
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+import pandas as pd
+
+
+# Calculate metrics
+accuracy = accuracy_score(y_true, y_pred)
+precision = precision_score(y_true, y_pred)
+recall = recall_score(y_true, y_pred)
+f1 = f1_score(y_true, y_pred)
+conf_matrix = confusion_matrix(y_true, y_pred)
+
+
+# Labels for the matrix
+labels = ['True Negative', 'False Positive', 'False Negative', 'True Positive']
+
+# Convert to a numpy array for seaborn heatmap
+cm_array = np.array(conf_matrix).reshape(2, 2)
+
+
+# Create a DataFrame to display the metrics
+metrics_df = pd.DataFrame({
+    'Metric': ['Accuracy', 'Precision', 'Recall', 'F1 Score'],
+    'Value': [f'{accuracy*100:.2f} %', f'{precision*100:.2f} %', f'{recall*100:.2f} %', f'{f1*100:.2f} %']
+})
+
+# Display the metrics DataFrame
+print("\nClassifier Metrics:")
+print(metrics_df)
+# Create a heatmap
+plt.figure(figsize=(4, 3))
+sns.heatmap(cm_array, annot=True, fmt='d', cmap='Blues', xticklabels=['Predicted 0', 'Predicted 1'], yticklabels=['Actual 0', 'Actual 1'])
+plt.xlabel('Predicted Label')
+plt.ylabel('True Label')
+plt.title('Confusion Matrix')
+plt.show()
+
+
+# ## Classifier Metrics:
+# - **Accuracy:** The ratio of correctly predicted observations to the total observations. It provides a general measure of model performance but may not be suitable for imbalanced datasets.
+# - **Precision:** The ratio of correctly predicted positive observations to the total predicted positives. It is particularly relevant when the cost of false positives is high.
+# - **Recall (Sensitivity or True Positive Rate):** The ratio of correctly predicted positive observations to the all observations in the actual class. It is relevant when the cost of false negatives is high.
+# - **F1 Score:** The harmonic mean of precision and recall. It balances precision and recall in situations where one is more critical than the other.
+# 
+# ## Confusion Matrix:
+# - A table showing a breakdown of actual and predicted classifications.
+#     - **True Positive (TP):** Instances where the model correctly predicts the positive class.
+#     - **True Negative (TN):** Instances where the model correctly predicts the negative class.
+#     - **False Positive (FP):** Instances where the model incorrectly predicts the positive class (Type I error).
+#     - **False Negative (FN):** Instances where the model incorrectly predicts the negative class (Type II error).
+
+# # **Hyperparameter Tuning**
+
+# In the process of fine-tuning hyperparameters, a rolling approach was adopted to ensure adaptability to changing market conditions. At each step, the model was trained on its past historical data, allowing it to dynamically adjust to evolving patterns. Hyperparameters were optimized through a systematic grid search, exploring combinations to maximize predictive precision. The outcome is a model finely tuned to navigate the complexities of financial markets with improved adaptability and robustness.
+
+# In[19]:
+
+
+# from sklearn.metrics import make_scorer, precision_score
+# from sklearn.model_selection import GridSearchCV
+# from xgboost import XGBClassifier
+
+# # Define the parameter grid to search through
+# param_grid = {
+#     'learning_rate': [0.2, 0.25, 0.3],
+#     'gamma': [0.6, 0.7, 0.8],
+#     'max_depth' : [2,3,4],
+#     'scale_pos_weight': [1, 2, 3]
+# }
+
+# # Initialize an empty list to store results
+# results = []
+# data = dfb
+# start,step = 10,5
+# # Iterate over your rolling dataset
+# for i in range(start, data.shape[0], step):
+#     train = data.iloc[0:i].copy()
+#     test = data.iloc[i:(i+step)].copy()
+
+#     # Split your data into features (X) and target (y)
+#     X_train = train[['Open', 'High', 'Low', 'Close']]
+#     y_train = train['Direction']
+    
+#     X_test = test[['Open', 'High', 'Low', 'Close']]
+#     y_test = test['Direction']
+
+#     # Initialize the XGBoost classifier
+#     xgb_model = XGBClassifier()
+    
+#     # Precision scorer with zero_division parameter
+#     precision_scorer = make_scorer(precision_score, zero_division=1)
+
+
+#     # Initialize GridSearchCV
+#     grid_search = GridSearchCV(estimator=xgb_model, param_grid=param_grid, scoring=precision_scorer, 
+#                                cv=3, verbose=1, n_jobs=-1)
+
+#     # Fit the grid search to your data
+#     grid_search.fit(X_train, y_train)
+
+#     # Access the best model
+#     best_model = grid_search.best_estimator_
+
+#     # Evaluate the best model on the test set
+#     precision = best_model.score(X_test, y_test)
+
+#     # Store results
+#     results.append({'Iteration': i, 'Best Hyperparameters': grid_search.best_params_, 'Test Precision': precision})
+
+
+# After many iterations, the search for optimal model settings concluded with the following specifications:
+# - **Learning Rate:** 0.25
+# - **Max Depth:** 3 *(default)*
+# - **Gamma:** 0.7
+# - **Scale Pos Weight:** 2
+# 
+# These parameters represent the chosen configuration for optimal model performance. 
+
+# # **Visualization of Signals**
+
+# This section provides a visual representation of our model's weekly closing buy/sell signals. A **red** triangle signifies a **sell** signal, indicating that the model predicts the closing price of the next week to be *lower* than the current week. Conversely, a **blue** triangle represents a **buy** signal, indicating an expected *increase* in the closing price for the next week.
+# 
+# Additionally, an Exponential Moving Average (EMA) with a length of 10 is overlaid. This EMA aids in managing trades, particularly for exiting positions that oppose the signals generated by the model. It serves as a snapshot of our trading model, offering insight into the weekly candlestick graph and the signals it generates.
+
+# In[20]:
+
+
+import pandas as pd
+import plotly.graph_objects as go
+
+# Plot candlesticks
+fig = go.Figure(data=[go.Candlestick(x=dfb.index,
+                open=dfb['Open'],
+                high=dfb['High'],
+                low=dfb['Low'],
+                close=dfb['Close'],
+                name='Candlesticks')])
+dfpl = predictions['Predictions']
+
+# Add buy/sell markers
+buy_signals = dfb[10:][dfpl == 0]
+sell_signals = dfb[10:][dfpl == 1]
+
+fig.add_trace(go.Scatter(x=buy_signals.index, y=buy_signals['Low']-500, mode='markers', name='Buy Signal', marker=dict(symbol='triangle-up', color='blue', size=5)))
+fig.add_trace(go.Scatter(x=sell_signals.index, y=sell_signals['High']+500, mode='markers', name='Sell Signal', marker=dict(symbol='triangle-down', color='red', size=5)))
+fig.add_trace(go.Scatter(x=dfb.index, y=dfb['EMAF'], mode='lines', name='EMA',line=dict(color='black',width=1)))
+
+# Update layout for better visibility
+fig.update_layout(xaxis_rangeslider_visible=False, title='Weekly Chart with ML Signal and EMA',
+                  xaxis_title='Week #', yaxis_title='Price',template = 'seaborn')
+
+
+# Show the plot
+fig.show()
+
+
+# # **Backtesting Class for Trading Strategy**
+
+# The `TradeEvaluator` class is our custom Python implementation designed for backtesting and evaluating simple trading strategies. It manages long and short positions, tracks trade-related information, and calculates the overall profit and loss (PNL) of executed trades. Let's break down the key components and functionalities of this class.
+
+# In[21]:
+
+
+class TradeEvaluator:
+    def __init__(self):
+        # Initialize strategy parameters and variables
+        self.long_position = {'active': False, 'entry_price': 0.0, 'exit_price': 0.0, 'trade_pnl': 0.0}
+        self.short_position = {'active': False, 'entry_price': 0.0, 'exit_price': 0.0, 'trade_pnl': 0.0}
+        self.current_pnl = 0.0  # Track current pnl for the active position
+        self.pnl = 0.0
+        self.total_pnl = []
+        self.trades = []
+    
+    def execute_trade(self, trade_type, entry_price,entry_date):
+        # Execute a trade and update relevant variables
+        trade = {'type': trade_type, 'entry_price': entry_price, 'entry_date': entry_date ,
+                 'exit_price': None, 'exit_date':None, 'trade_pnl': 0.0}
+        self.trades.append(trade)
+
+        if trade_type == 'long':
+            self.long_position['active'] = True
+            self.long_position['entry_price'] = entry_price
+
+        elif trade_type == 'short':
+            self.short_position['active'] = True
+            self.short_position['entry_price'] = entry_price
+
+        else:
+            trade_pnl = 0
+
+        self.total_pnl.append(self.pnl)
+
+    def close_position(self, exit_price,exit_date):
+        # Close the active position and update relevant variables
+        if self.long_position['active']:
+            self.long_position['active'] = False
+            self.long_position['exit_price'] = exit_price
+            self.long_position['trade_pnl'] = 100 * (exit_price - self.long_position['entry_price']) - 750
+            self.pnl += self.long_position['trade_pnl']
+            self.current_pnl = 0.0  # Reset current pnl after exiting
+
+            # Update exit price and pnl in the trades list
+            self.trades[-1]['exit_price'] = exit_price
+            self.trades[-1]['exit_date'] = exit_date
+            self.trades[-1]['trade_pnl'] = self.long_position['trade_pnl']
+            self.total_pnl.append(self.pnl)
+
+        elif self.short_position['active']:
+            self.short_position['active'] = False
+            self.short_position['exit_price'] = exit_price
+            self.short_position['trade_pnl'] = -100 * (exit_price - self.short_position['entry_price']) - 750
+            self.pnl += self.short_position['trade_pnl']
+            self.current_pnl = 0.0  # Reset current pnl after exiting
+
+            # Update exit price and pnl in the trades list
+            self.trades[-1]['exit_price'] = exit_price
+            self.trades[-1]['exit_date'] = exit_date
+            self.trades[-1]['trade_pnl'] = self.short_position['trade_pnl']
+
+            self.total_pnl.append(self.pnl)
+
+    def update_current_pnl(self, current_price):
+        # Update the current pnl for the active position
+        if self.long_position['active']:
+            self.current_pnl = 100 * (current_price - self.long_position['entry_price']) - 750
+
+        elif self.short_position['active']:
+            self.current_pnl = -100 * (current_price - self.short_position['entry_price']) - 750
+        else:
+            self.current_pnl = 0
+        #self.pnl += self.current_pnl
+           
+
+    def get_summary(self):
+        # Return a summary of the strategy's performance
+        summary = {
+            'total_pnl': self.total_pnl,
+            'trades': self.trades,
+            'pnl': self.pnl,
+            'current_pnl': self.current_pnl
+        }
+        return summary
+
+
+# ## **Initialization (`__init__` method):**
+# - Initializes strategy parameters and variables.
+# - `long_position` and `short_position` dictionaries represent the status of long and short positions, including whether they are active, entry and exit prices, and trade PNL.
+# - `current_pnl` tracks the current PNL for the active position.
+# - `pnl` represents the cumulative PNL across all trades.
+# - `total_pnl` is a list to store the PNL at different points in time.
+# - `trades` is a list to store details of each executed trade.
+# 
+# ## **Execute Trade (`execute_trade` method):**
+# - Executes a trade based on the trade type ('long', 'short', or 'none') and the entry price.
+# - Updates the trades list with trade details.
+# - Adjusts position status and entry prices accordingly.
+# 
+# ## **`close_position` Method:**
+# - The `close_position` method is responsible for closing the active trading position, whether it is a long or short position.
+# - It takes the `exit_price` as a parameter, representing the price at which the position is closed.
+# - If the position is long, it calculates the trade PNL and updates the overall PNL and current PNL.
+# - Similarly, if the position is short, it calculates the trade PNL with the appropriate sign and updates the overall PNL and current PNL.
+# - The method also updates the exit price and trade PNL in the trades list, providing a detailed record of each trade.
+# 
+# ## **`update_current_pnl` Method:**
+# - The `update_current_pnl` method is responsible for updating the current PNL for the active trading position based on the given current_price.
+# - If the position is long, it calculates the PNL assuming a long position.
+# - If the position is short, it calculates the PNL assuming a short position.
+# 
+# ## **`get_summary` Method:**
+# - The `get_summary` method returns a summary of the strategy's performance, including:
+#   - `total_pnl`: A list of total PNL at different points in time.
+#   - `trades`: A list containing details of each executed trade.
+#   - `pnl`: The cumulative PNL across all trades.
+#   - `current_pnl`: The current PNL for the active position.
+
+# This section demonstrates the application of the TradeEvaluator class for implementing and backtesting a trading strategy. Follow along as we iterate through daily and weekly OHLC data, applying our trading logic, and leveraging the custom backtesting class to evaluate the strategy's performance.
+
+# # **Expiry Dates List**
+
+# Since we need to close positions on expiry dates, we compile a list of all expiry dates to check against the current date. If the current date matches any in the expiry list, we exit all active positions on that day.
+
+# In[22]:
+
+
+import pandas as pd
+df['ExpiryDate'] = pd.to_datetime(df['ExpiryDate'], format='%Y%m%d', errors='coerce')
+unique_expiry_dates = df['ExpiryDate'].unique().tolist()
+unique_expiry_dates=pd.to_datetime(unique_expiry_dates)
+unique_expiry_dates
+
+
+# # **Executing Trading Logic with Backtesting**
+
+# Comments in the code provide clarity by explaining each part of the logic, making it easy to understand and work with.
+
+# In[23]:
+
+
+from datetime import datetime, timedelta
+
+backtester = TradeEvaluator()  # Instantiate the backtester outside the loop
+capital =[]
+final = dfb['DateTime'].values[-1]
+# Start from week 10 as week 0 to week 9 are used for training only
+for index, week_data in dfb[10:].iterrows():
+    week_end = week_data['DateTime']
+
+    # Filter daily data for the current week
+    end_date = week_end
+    start_date = end_date - pd.Timedelta(days=6)  # A week lasts for 7 days
+    weekly_df_D = df_D[df_D['DateTime'].between(start_date, end_date)]
+
+    # Iterate over daily data within the current week
+    for index2, daily_value in weekly_df_D.iterrows():
+        day = daily_value['DateTime']
+        next_day = daily_value['DateTime'].date()+timedelta(days = 1)
+        last_day = str(day.date())
+        next_last_day = str(next_day)
+        # Update PnL based on daily close
+        backtester.update_current_pnl(daily_value['Close'])
+        
+        # The daily SL limit - use previous week's ATR as current week's ATR might not be known yet
+        if backtester.current_pnl < -100*dfb['ATR'][index-1]*0.75:
+            backtester.close_position(daily_value['Close'],last_day)
+            if last_day not in unique_expiry_dates and backtester.trades[-1]['type'] == 'short':
+                backtester.execute_trade('long', daily_value['Close'],last_day)
+            elif last_day not in unique_expiry_dates and backtester.trades[-1]['type'] == 'long':
+                backtester.execute_trade('short', daily_value['Close'],last_day)
+                        
+        # Exit active positions on expiry dates
+        if last_day in unique_expiry_dates or next_last_day in unique_expiry_dates:
+            backtester.close_position(daily_value['Close'],last_day)
+        
+        # Keep last day for the week in case it is expiry
+        expiry = last_day in unique_expiry_dates or last_day in unique_expiry_dates
+        not_expiry = not expiry
+            
+    
+    # Execute trades based on weekly data
+    
+    # ML Model gives sell signal and no current short position
+    if predictions['Predictions'].values[index - 10] == 1 and not backtester.short_position['active']: 
+        
+        # Check if long position is active and if position should be exited and reversed based on EMA logic
+        if expiry or (backtester.long_position['active'] and week_data['EMAF'] < week_data['Low']):
+            backtester.close_position(week_data['Close'],last_day)
+            
+        # If no long position, take short position as per ML model
+        if not_expiry and not backtester.long_position['active']:
+            backtester.execute_trade('short', week_data['Close'],last_day)  # Make sure this sets the exit price
+    
+    # ML Model gives buy signal and no current long position
+    elif predictions['Predictions'].values[index - 10] == 0 and not backtester.long_position['active']: 
+        
+        # Check if short position is active and if position should be exited and reversed based on EMA logic        
+        if expiry or (backtester.short_position['active'] and week_data['EMAF'] < week_data['High']):
+            backtester.close_position(week_data['Close'],last_day)
+            
+        # If no short position, take long position as per ML model    
+        if not_expiry and not backtester.short_position['active']:
+            backtester.execute_trade('long', week_data['Close'],last_day)
+
+    # Close position based on Take Profit Condition:
+    if expiry in unique_expiry_dates or backtester.current_pnl > 100*week_data['ATR']*1.6:
+        backtester.close_position(week_data['Close'],last_day)
+        if not_expiry and backtester.trades[-1]['type'] == 'short':
+            backtester.execute_trade('long', week_data['Close'],last_day)
+        elif not_expiry and backtester.trades[-1]['type'] == 'long':
+            backtester.execute_trade('short', week_data['Close'],last_day)
+            
+    #Close position on last date
+    if week_end == final:
+        backtester.close_position(week_data['Close'],last_day)
+        
+    backtester.update_current_pnl(week_data['Close'])   
+    # Update the capital list
+    capital.append(backtester.pnl+backtester.current_pnl)
+
+
+# ## **Backtester Initialization:**
+# - Instantiate backtester for strategy evaluation.
+# - Initialize the capital list for performance tracking.
+#   
+# ## **Weekly Data Iteration:**
+# - Iterate through weekly OHLC data.
+# - Update PnL based on daily close.
+#   
+# ## **SL Limit Check:**
+# - Monitor daily PnL against SL limit - Exit based on daily closing price only.
+# - Close and reverse positions based on weekly ML signal and EMA logic.
+#   
+# ## **Position Management:**
+# - Exit positions on specific expiry dates.
+# - Exit previous trade before entering another one.
+#   
+# ## **Execute Weekly Trades:**
+# - Implement trades based on ML model signals.
+# - Use EMA logic for exiting existing positions.
+#   
+# ## **Take Profit Condition:**
+# - Close positions at specified profit thresholds based on weekly closing price only.
+# - Reverse positions according to the previous trade type.
+#   
+# ## **Last Date Position Closure:**
+# - Ensure all positions are closed on the last date.
+#   
+# ## **Capital List Update:**
+# - Update capital list for weekly Total PnL.
+#   
+# ## **Plotting Data Preparation:**
+# - Prepare capital list for plotting strategy performance.
+
+# In[24]:
+
+
+summary = backtester.get_summary()
+
+
+# The above code snippet retrieves a summary of the trading strategy's performance. The `get_summary()` function is part of the `TradeEvaluator` class and is designed to compile and return essential information such as total profit and loss (PnL), individual trades executed, current PnL, and other relevant metrics. Once stored in the variable `summary`, this information can be used for analysis, reporting, and further processing.
+
+# # **Strategic Outperformance**
+
+# In[25]:
+
+
+import plotly.graph_objects as go
+
+# Create a Plotly figure
+fig = go.Figure()
+
+# Add a line trace for the different performances
+fig.add_trace(go.Scatter(x=dfb['DateTime'][10:], y=capital, mode='lines', name='Algo Performance',line=dict(color='blue')))
+fig.add_trace(go.Scatter(x=dfb['DateTime'][10:], y=(dfb['Close'][10:]-dfb['Close'][10])*100, mode='lines', name='Buy and Hold',line=dict(color='green')))
+
+# Customize the layout
+fig.update_layout(
+    title='Algo vs. Market: PnL Showdown',
+    xaxis_title='Week #',
+    yaxis_title='Cumulative PnL',
+    template='seaborn',  
+)
+
+# Display plot
+fig.show()
+
+
+# The chart above vividly compares the impressive Total Profit and Loss (PnL) generated by our algorithm with the conventional Buy & Hold and Sell & Hold strategies. Observe how our algorithm not only outpaces but exceeds market performance by almost 80 Lakhs, underscoring a notable triumph in strategic trading endeavors.
+
+# # **Backesting Analysis**
+
+# We use the `summary` variable to derive diverse Profit and Loss (PnL) statistics, enabling the computation of crucial metrics that evaluate the effectiveness of our trading strategy.
+
+# In[26]:
+
+
+# PnL occurred in each trade
+Trade_PnL = [round(trade.get('trade_pnl'),2) for trade in summary['trades']]
+
+# The total PnL after each trade (starts from 0)
+Total_PnL = summary['total_pnl']
+
+# PnL for each trade: long and short positions
+long_pnl = [round(trade.get('trade_pnl'),2) for trade in summary['trades'] if trade.get('type')=='long']
+short_pnl = [round(trade.get('trade_pnl'),2) for trade in summary['trades'] if trade.get('type')=='short']
+
+
+# ## **Trade Count and Win Rate**
+
+# In[27]:
+
+
+trade_count = len(Trade_PnL)
+winning_count = sum([1 for trade in Trade_PnL if trade>0])
+losing_count = sum([1 for trade in Trade_PnL if trade<0])
+
+win_rate = round(100*winning_count/trade_count,2)
+
+
+# In[28]:
+
+
+print(f"Total Trades: {trade_count}\nWinning Trades: {winning_count}\nLosing Trades: {losing_count}\nTotal Win Rate: {win_rate} %")
+
+
+# ## **Number of Long and Short Trades**
+
+# In[29]:
+
+
+long_count = len(long_pnl)
+short_count = len(short_pnl)
+
+
+# In[30]:
+
+
+print(f"Long Trades: {long_count}\nShort Trades:{short_count}")
+
+
+# ## **Number of Winning and Losing Trades in Short and Long Trades**
+
+# In[31]:
+
+
+long_winners = sum([1 for trade in long_pnl if trade>0])
+long_losers = sum([1 for trade in long_pnl if trade<0])
+long_winrate = round(100*long_winners/(long_winners+long_losers),2)
+
+short_winners = sum([1 for trade in short_pnl if trade>=0])
+short_losers= sum([1 for trade in short_pnl if trade<0])
+short_winrate = round(100*short_winners/(short_winners+short_losers),2)
+
+
+# In[32]:
+
+
+print(f"Number of Winning Long Trades: {long_winners}\nNumber of Losing Long Trades: {long_losers}\nWinning Rate of Long Trades: {long_winrate} %\n\nNumber of Winning Short Trades: {short_winners}\nNumber of Losing Short Trades: {short_losers}\nWinning Rate of Short Trades: {short_winrate} %")
+
+
+# ## **Streak Counter for Trades**
+
+# In[33]:
+
+
+def max_streak(numbers):
+    # Initialize variables to track consecutive losses and gains
+    max_consecutive_losses = 0
+    max_consecutive_gains = 0
+    current_consecutive_losses = 0
+    current_consecutive_gains = 0    
+
+    # Iterate through the list of numbers
+    for num in numbers:
+        # Check for consecutive losses
+        if num < 0:
+            current_consecutive_losses += 1
+            current_consecutive_gains = 0
+            max_consecutive_losses = max(max_consecutive_losses, current_consecutive_losses)
+        # Check for consecutive gains
+        elif num > 0:
+            current_consecutive_losses = 0
+            current_consecutive_gains += 1
+            max_consecutive_gains = max(max_consecutive_gains, current_consecutive_gains)
+
+    # Return the maximum consecutive losses and gains
+    return max_consecutive_losses, max_consecutive_gains
+
+# Calculate the maximum drawdown phase and value
+streak = max_streak(Trade_PnL)
+
+
+print(f"Maximum Consecutive Wins: {streak[1]} Trades\nMaximum Consecutive Losses: {streak[0]} Trades")
+
+
+# ## **Largest Winning and Losing Trade**
+
+# In[34]:
+
+
+max_gain = max(Trade_PnL)
+max_loss = abs(min(Trade_PnL))
+
+print(f"Largest Gain: {max_gain}\nLargest Loss: {max_loss}")
+
+
+# ## **Maximum Drawdown Phase and Value**
+
+# In[35]:
+
+
+def max_drawdown(numbers):
+    # Initialize variables to track consecutive drawdown phases
+    max_consecutive_drawdown = 0
+    current_consecutive_drawdown = 0
+    peak_value = 0
+    max_drawdown_value = 0
+
+    # Iterate through the list of numbers
+    for num in numbers:
+        # Check for drawdown phase and update the phase and value
+        if num < peak_value:
+            current_consecutive_drawdown += 1
+            max_consecutive_drawdown = max(max_consecutive_drawdown, current_consecutive_drawdown)
+            max_drawdown_value = max(max_drawdown_value, peak_value - num)
+        else:
+            peak_value = num
+            current_consecutive_drawdown = 0
+
+    # Return the maximum consecutive drawdown phase and its value
+    return max_consecutive_drawdown, max_drawdown_value
+
+# Calculate the maximum drawdown phase and value
+drawdown = max_drawdown(capital)
+
+print(f"Maximum Drawdown Phase: {drawdown[0]} Weeks\nMaximum Drawdown:{round(drawdown[1],2)}")
+
+
+# ## **PnL Calculation and Profit Factor**
+
+# In[36]:
+
+
+net_pnl = round(sum(Trade_PnL),2)
+gross_profit =  round(sum(num for num in Trade_PnL if num > 0),2)
+gross_loss = round(abs(sum(num for num in Trade_PnL if num < 0)),2)
+
+try:
+    profit_factor = round(gross_profit/gross_loss,2)
+    print(f"Net PnL: {net_pnl}\nGross Profit: {gross_profit}\nGross Loss: {gross_loss}\nProfit Factor: {profit_factor}")
+except ZeroDivisionError:
+    profit_factor = 'Infinity'
+    print(f"Net PnL: {net_pnl}\nGross Profit: {gross_profit}\nGross Loss: {gross_loss}\nProfit Factor: {profit_factor}")
+
+
+# ## **PnL of Short and Long Trades**
+
+# In[37]:
+
+
+long_net_pnl = round(sum(long_pnl),2)
+long_winners_pnl = round(sum([trade for trade in long_pnl if trade>0]),2)
+long_losers_pnl = round(sum([trade for trade in long_pnl if trade<0]),2)
+
+short_net_pnl = round(sum(short_pnl),2)
+short_winners_pnl = round(sum([trade for trade in short_pnl if trade>0]),2)
+short_losers_pnl= round(sum([trade for trade in short_pnl if trade<0]),2)
+
+
+# In[38]:
+
+
+print(f"Net PnL of Long Trades: {long_net_pnl}\nGross Profit of Long Trades: {long_winners_pnl}\nGross Loss of Long Trades: {abs(long_losers_pnl)}\n\nNet PnL of Short Trades: {short_net_pnl}\nGross Profit of Short Trades: {short_winners_pnl}\nGross Loss of Short Trades: {abs(short_losers_pnl)}")
+
+
+# ## **Average Profit/Trade**
+
+# In[39]:
+
+
+pnl_per_trade = round(net_pnl/trade_count,2)
+print(f"Average Profit per Trade: {pnl_per_trade}")
+
+
+# # **Conclusion**
+# The machine learning-based trading Algo designed for weekly trades, coupled with effective risk management, delivered profitable returns characterized by low drawdown and a commendable win rate. Notably, all performance metrics surpassed expectations. The Algo demonstrated exceptional outperformance, surpassing traditional Buy and Hold strategies by over 80 Lakhs, showcasing its reliability for real-world applications in live markets. Its daily timeframe approach ensures minimal latency, accommodating trades held for days or even weeks, and mitigating slippage concerns. The Algo's strategic focus on fewer trades with substantial profits underscores its practicality and dynamic adaptability inherent in its machine learning design. We express our sincere gratitude for the opportunity to explore and develop innovative strategies in the exciting realm of algorithmic trading.
+
+# # **Appendix**
+# ## **Appendix A**
+# ### Complete List of Trades
+# Here is the complete list of trades taken by our algo in a span of almost 3 years. Execute the provided code to generate a CSV file containing all the trades executed by our strategy for the given dataset.
+
+# In[40]:
+
+
+trades = summary['trades']
+
+trade_df = pd.DataFrame(trades)
+
+# Mapping 'type' to 'qty'
+trade_df['qty'] = trade_df['type'].apply(lambda x: 100 if x == 'long' else -100)
+
+# Formatting date and time columns
+trade_df['entry_date'] = pd.to_datetime(trade_df['entry_date']).dt.strftime('%Y%m%d')
+trade_df['exit_date'] = pd.to_datetime(trade_df['exit_date']).dt.strftime('%Y%m%d')
+trade_df['entry_time'] = '1530'
+trade_df['exit_time'] = '1530'
+
+# Renaming columns to match the required format
+trade_df = trade_df.rename(columns={'entry_date': 'entrydate', 'entry_time': 'entrytime', 'exit_date': 'exitdate', 'exit_time': 'exittime', 'entry_price': 'entryprice', 'exit_price': 'exitprice'})
+
+# Keeping only the required columns
+trade_df = trade_df[['qty', 'entrydate', 'entrytime', 'entryprice', 'exitdate', 'exittime', 'exitprice']]
+
+# Save the DataFrame to a CSV file
+trade_df.to_csv('SiddAdi_MLBased_trades_1DTF.csv', index=False)
+
+print("Trades saved to 'SiddAdi_MLBased_trades_1DTF.csv'")
+
+
+# ## **Appendix B**
+# ### Equity and Drawdown Curve
+
+# In[41]:
+
+
+import plotly.graph_objects as go
+import numpy as np
+
+equity_values = capital  # Replace with your equity values
+drawdown_values = np.maximum.accumulate(equity_values) - equity_values
+
+# Create traces for equity and drawdown
+trace_equity = go.Scatter(x=dfb[10:].index, y=equity_values, name='Equity', line=dict(color='blue'))
+trace_drawdown = go.Bar(x=dfb[10:].index, y=-drawdown_values, name='Drawdown', marker=dict(color='red',opacity = 0.6), yaxis='y2')
+
+# Create layout with secondary y-axis
+layout = go.Layout(
+    title='Equity and Drawdown Chart',
+    yaxis=dict(title='Equity', color='blue'),
+    yaxis2=dict(title='Drawdown', overlaying='y', side='right', color='red'),
+    template = 'seaborn'
+)
+
+# Create figure
+fig = go.Figure(data=[trace_equity, trace_drawdown], layout=layout)
+
+# Show the figure
+fig.show()
+
+
+# ## **Appendix C**
+# ### Trades on Daily Chart
+
+# In[42]:
+
+
+import plotly.graph_objects as go
+
+# Assuming you have a candlestick figure named 'fig'
+# You need to replace this with your actual candlestick chart data
+
+# Create a trace for the candlestick chart (replace with your actual candlestick data)
+candlestick_trace = go.Candlestick(x=df_D['DateTime'], open=df_D['Open'], 
+                                   high=df_D['High'], low=df_D['Low'], 
+                                   close=df_D['Close'])
+
+# Create traces for the executed trades
+trades_traces = []
+
+for trade in summary['trades']:
+    entry_date = trade['entry_date']
+    exit_date = trade['exit_date']
+    entry_price = trade['entry_price']
+    exit_price = trade['exit_price']
+    pnl = trade['trade_pnl']
+    trade_type = trade['type']
+
+    # Determine marker symbol and color based on trade type
+    marker_entry_symbol = 'triangle-down' if trade_type == 'short' else 'triangle-up'
+    marker_exit_symbol = 'triangle-down' if trade_type == 'long' else 'triangle-up'
+    marker_entry_color = 'red' if trade_type == 'short' else 'green'
+    marker_exit_color = 'green' if trade_type == 'short' else 'red'
+
+
+    # Adjust y-coordinates for entry and exit markers
+    entry_y = entry_price + 1000 if trade_type == 'short' else entry_price - 1000
+    exit_y = exit_price - 1000 if trade_type == 'short' else exit_price + 1000
+    
+    # Create a scatter trace for entry and exit points
+    entry_trace = go.Scatter(x=[entry_date], y=[entry_price], mode='markers', 
+                             marker=dict(symbol=marker_entry_symbol, size=10, color=marker_entry_color), 
+                             name='Entry')
+    exit_trace = go.Scatter(x=[exit_date], y=[exit_price], mode='markers', 
+                            marker=dict(symbol=marker_exit_symbol, size=10, color=marker_exit_color), 
+                            name='Exit')
+
+    # Create a rectangle trace for the trades
+    trade_trace = go.Scatter(
+        x=[entry_date, exit_date, exit_date, entry_date, entry_date],
+        y=[entry_price, entry_price, exit_price, exit_price, entry_price],
+        fill='toself',
+        fillcolor='rgba(0,255,0,0.3)' if pnl > 0 else 'rgba(255,0,0,0.3)',
+        line=dict(color='rgba(255,255,255,0)'),
+        name=f'Profit of {round(pnl,2)}' if pnl > 0 else f'Loss of {round(pnl,2)}',   
+    )
+
+    trades_traces.extend([entry_trace, exit_trace, trade_trace])
+
+# Add the candlestick and trade traces to the figure
+fig = go.Figure(data=[candlestick_trace] + trades_traces)
+fig.update_layout(xaxis_rangeslider_visible=False, title='Daily Chart with Trade Execution',
+                  xaxis_title='Day', yaxis_title='Price',template = 'seaborn',showlegend =False)
+
+# Show the figure
+fig.show()
+
+
+# Green triangles indicate entry for long positions and exits for short positions. Red triangles denote exits for long positions and entries for short positions. Profitable trades are marked by green rectangles, while red rectangles indicate losses, spanning from entry to exit.
