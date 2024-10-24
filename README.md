@@ -19,11 +19,10 @@ In the final round, participants were provided with a dataset containing 1-minut
 ## ⚙️ Project Structure
 The repository contains the following key files and directories:
 
-- /strategy_ppt/: High-level strategy proposal (Round 1).
-- /flowchart/: Hedge fund flowchart submission (Round 2).
-- /code/: Python scripts for implementing and backtesting trading strategies (Round 3).
-- /data/: Dataset used for backtesting (OHLC 1-min data).
-- /results/: Backtesting results and performance reports included in the final presentation showcased by me at IIT Bombay, December 27th 2023.
+- /AlgoNinja.pdf: High-level strategy proposal (Round 1).
+- /Hedge fund Flow Diagram.pdf : Hedge fund flowchart submission (Round 2).
+- /.. Strategy: Python scripts for implementing and backtesting trading strategies (Round 3).
+- /AlgoNinja_FinalRound.key: Backtesting results and performance reports included in the final presentation showcased by me at IIT Bombay, December 27th 2023.
 
 ## 📊 Strategies Implemented
 The following strategies were implemented and backtested for the competition:
