@@ -21,8 +21,8 @@ The repository contains the following key files and directories:
 
 - /AlgoNinja.pdf: High-level strategy proposal (Round 1).
 - /Hedge fund Flow Diagram.pdf : Hedge fund flowchart submission (Round 2).
-- /.. Strategy: Python scripts for implementing and backtesting trading strategies (Round 3).
-- /AlgoNinja_FinalRound.key: Backtesting results and performance reports included in the final presentation showcased by me at IIT Bombay, December 27th 2023.
+- /... Strategy/: Python scripts with trades csv for implementing and backtesting the 3 different trading strategies (Round 3).
+- /AlgoNinja_FinalRound.pdf: Backtesting results and performance reports included in the final presentation showcased by me at IIT Bombay, December 27th 2023.
 
 ## 📊 Strategies Implemented
 The following strategies were implemented and backtested for the competition:
